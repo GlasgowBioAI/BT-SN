@@ -43,9 +43,6 @@ config = {
     # ── Model type ──
     'model_type': 'barlow_twins',                   # 'barlow_twins' | 'auto_encoder' | 'VAE' | 'scarf' | 'vime' | 'byol'
 
-    # ── VAE specific ──
-    'beta_vae': [0.01, 0.5],
-
     # ── Data ──
     'testing_dataset_name': 'TCGA',                 # 'TCGA' | 'Metabric' | 'scanb'
     'test_size': 0.2,                               # train/test split ratio
