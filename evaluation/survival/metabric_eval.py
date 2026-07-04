@@ -67,7 +67,7 @@ print(f"  survival shape: {survival.shape}")
 checkpoints = {
     'AE': CHECKPOINTS['AE_metabric'],
     'VAE': CHECKPOINTS['VAE_metabric'],
-    'BT': CHECKPOINTS['BT_metabric'],  # BEST: C-index=0.582
+    'BT': CHECKPOINTS['BT_metabric'], 
     'SCARF': CHECKPOINTS['SCARF_metabric'],
     'BYOL': CHECKPOINTS['BYOL_metabric'],
     'VIME': CHECKPOINTS['VIME_metabric'],
