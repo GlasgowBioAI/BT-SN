@@ -97,3 +97,7 @@ python evaluation/survival/km_scanb.py \
 - Each view is generated independently during training.
 - Downstream analyses use the encoder output; the projector is discarded.
 - Independent training runs are combined within downstream evaluation folds as described in the article.
+
+## License
+
+This project is released under the MIT License. See `LICENSE` for details.
