@@ -23,7 +23,7 @@ _bt_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__fi
 sys.path.insert(0, _bt_path)
 from common import Encoder, VAE_Encoder, build_hidden_dims, generate_embeddings
 
-from paths import BASE, CHECKPOINTS, p
+from paths import BASE, p, checkpoint_runs
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print(f"Using device: {device}")
@@ -61,22 +61,14 @@ print(f"  {len(common)} samples with survival data")
 # ──────────────────────────────────────────────
 
 
-checkpoints = {
-    'AE': CHECKPOINTS['AE_scanb'],
-    'VAE': CHECKPOINTS['VAE_scanb'],
-    'BT': CHECKPOINTS['BT_scanb'],  
-    'SCARF': CHECKPOINTS['SCARF_scanb'],
-    'BYOL': CHECKPOINTS['BYOL_scanb'],
-    'VIME': CHECKPOINTS['VIME_scanb'],
-    'BT_noise': CHECKPOINTS['BT_noise_scanb'],
-
-}
+checkpoints = {name: checkpoint_runs(name, 'scanb')
+               for name in ('AE', 'VAE', 'BT', 'SCARF', 'BYOL', 'VIME', 'BT_noise')}
 
 # ──────────────────────────────────────────────
 # 5. Generate embeddings for each method
 # ──────────────────────────────────────────────
 input_dim = test_dist.shape[1]
-hidden_dims = build_encoder(input_dim)
+hidden_dims = build_hidden_dims(input_dim)
 X = test_dist.values
 results = {}
 
@@ -84,7 +76,7 @@ results = {}
 print(f"\n=== PCA (dim=4) ===")
 pca = PCA(n_components=4, random_state=42)
 emb_pca = pca.fit_transform(X)
-results['PCA'] = pd.DataFrame(emb_pca, index=test_dist.index)
+results['PCA'] = [pd.DataFrame(emb_pca, index=test_dist.index)]
 
 # -- NMF --
 print(f"NMF (dim=4)")
@@ -92,24 +84,20 @@ print(f"NMF (dim=4)")
 X_pos = X - X.min(axis=0) + 1e-10
 nmf = NMF(n_components=4, random_state=42, max_iter=1000)
 emb_nmf = nmf.fit_transform(X_pos)
-results['NMF'] = pd.DataFrame(emb_nmf, index=test_dist.index)
+results['NMF'] = [pd.DataFrame(emb_nmf, index=test_dist.index)]
 
 # -- AE / VAE / BT / BT_noise --
-for model_name, ckpt_path in checkpoints.items():
-    if not os.path.exists(ckpt_path):
-        print(f"\n{model_name}: checkpoint NOT FOUND at {ckpt_path}, skipping")
-        continue
-    print(f"\n{model_name}: loading {ckpt_path}")
-    if model_name == 'VAE':
-        encoder = VAE_Encoder(input_dim, hidden_dims, 4).to(device)
-    else:
-        encoder = Encoder(input_dim, hidden_dims, 4).to(device)
-    sd = torch.load(ckpt_path, map_location=device)
-    sd = {k.replace('_orig_mod.', ''): v for k, v in sd.items()}
-    encoder.load_state_dict(sd)
-    encoder.eval()
-    emb = generate_embeddings(test_dist, encoder, device, model_name)
-    results[model_name] = emb
+for model_name, run_paths in checkpoints.items():
+    if not run_paths:
+        print(f"\n{model_name}: no checkpoints found, skipping"); continue
+    results[model_name] = []
+    for ckpt_path in run_paths:
+        print(f"\n{model_name}: loading {ckpt_path}")
+        encoder = VAE_Encoder(input_dim, hidden_dims, 4).to(device) if model_name == 'VAE' else Encoder(input_dim, hidden_dims, 4).to(device)
+        sd = torch.load(ckpt_path, map_location=device, weights_only=True)
+        sd = {k.replace('_orig_mod.', ''): v for k, v in sd.items()}
+        encoder.load_state_dict(sd); encoder.eval()
+        results[model_name].append(generate_embeddings(test_dist, encoder, device))
 
 # ──────────────────────────────────────────────
 # 6. Survival evaluation: 5-fold CV CoxPH + median risk split
@@ -121,7 +109,8 @@ print(f"{'='*65}")
 all_metrics = []
 kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
-for method_name, emb_df in results.items():
+for method_name, run_embeddings in results.items():
+    emb_df = run_embeddings[0]
     common_idx = emb_df.index.intersection(survival.index)
     t = survival.loc[common_idx, 'time']
     e = survival.loc[common_idx, 'status']
@@ -135,23 +124,20 @@ for method_name, emb_df in results.items():
     all_risk = pd.Series(index=cox_df.index, dtype=float)
 
     for train_idx, test_idx in kf.split(cox_df):
-        train_fold = cox_df.iloc[train_idx]
-        test_fold = cox_df.iloc[test_idx]
-        try:
-            cph = CoxPHFitter()
-            cph.fit(train_fold, duration_col='time', event_col='status', show_progress=False)
-            risk_score = cph.predict_partial_hazard(test_fold)
-            all_risk.iloc[test_idx] = risk_score.values
-
-            ci = concordance_index(test_fold['time'], -risk_score, test_fold['status'])
-            fold_ci.append(ci)
-
-            median_risk = risk_score.median()
-            groups = (risk_score >= median_risk).astype(int)
-            lr_result = multivariate_logrank_test(test_fold['time'], groups, test_fold['status'])
-            fold_pval.append(lr_result.p_value)
-        except Exception:
-            continue
+        seed_ci, seed_p = [], []
+        for run in run_embeddings:
+            run_df = run.loc[common_idx].copy(); run_df['time'] = t; run_df['status'] = e
+            train_fold, test_fold = run_df.iloc[train_idx], run_df.iloc[test_idx]
+            try:
+                cph = CoxPHFitter(); cph.fit(train_fold, 'time', 'status', show_progress=False)
+                risk_score = cph.predict_partial_hazard(test_fold)
+                seed_ci.append(concordance_index(test_fold['time'], -risk_score, test_fold['status']))
+                groups = (risk_score >= risk_score.median()).astype(int)
+                seed_p.append(multivariate_logrank_test(test_fold['time'], groups, test_fold['status']).p_value)
+            except Exception:
+                continue
+        if seed_ci:
+            fold_ci.append(np.mean(seed_ci)); fold_pval.append(np.median(seed_p))
 
     if len(fold_ci) > 0:
         ci_mean = np.mean(fold_ci)
@@ -163,10 +149,8 @@ for method_name, emb_df in results.items():
         pval_combined = 1.0
 
     # Full-dataset median risk split for n_high/n_low
-    median_all = all_risk.median()
-    full_groups = (all_risk >= median_all).astype(int)
-    n_high = (full_groups == 1).sum()
-    n_low = (full_groups == 0).sum()
+    n_high = len(cox_df) // 2
+    n_low = len(cox_df) - n_high
 
     print(f"{method_name:10s} {ci_mean:>7.4f}+-{ci_std:.4f} {pval_combined:>12.2e} {n_high:>8d} {n_low:>8d}")
     all_metrics.append({

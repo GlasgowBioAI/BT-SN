@@ -57,15 +57,15 @@ class VAE_Encoder(nn.Module):
 
 
 class Projector(nn.Module):
-    def __init__(self, output_dim, hidden_dims, input_dim):
+    """Projection head used only while optimizing the Barlow Twins loss."""
+    def __init__(self, input_dim, hidden_dim=128, output_dim=256):
         super().__init__()
-        layers = []
-        for i in range(len(all_dims) - 1):
-            layers.append(nn.Linear(all_dims[i], all_dims[i + 1]))
-            if i < len(all_dims) - 2:
-                layers.append(nn.BatchNorm1d(all_dims[i + 1]))
-                layers.append(nn.ReLU())
-        self.layers = nn.Sequential(*layers)
+        self.layers = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
         self.apply(initialize_weights)
 
     def forward(self, x):

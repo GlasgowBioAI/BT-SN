@@ -53,38 +53,12 @@ import numpy as np
 
 import torch
 
-def generate_weighted_normal_tensor(
-    normal_bulk: torch.Tensor,  # [N_norm, G]，  device  
-    batch_size: int,
-    num_samples: int = 20,
-) -> torch.Tensor:
-    """
-      batch   normal bulk，  PyTorch  。
-     ：
-      - normal_bulk: Tensor，shape = [N_norm, G]，  GPU  
-      - batch_size:  int，  bulk
-      - num_samples: int，  normal_bulk   num_samples  （ ）
-     ：
-      - w_batch: Tensor，shape = [batch_size, G]
-    """
-    N_norm, G = normal_bulk.shape
-    device = normal_bulk.device
-
-    # 1.   [batch_size, num_samples]
-    idxs = torch.randint(0, N_norm, (batch_size, num_samples), device=device)
-
-    # 2.   sampled：[batch_size, num_samples, G]
-    sampled = normal_bulk[idxs]  #  
-
-    # 3.  ：[batch_size, num_samples, 1]
-    weights = torch.rand(batch_size, num_samples, device=device)
-    weights = weights / weights.sum(dim=1, keepdim=True)
-    weights = weights.unsqueeze(-1)
-
-    # 4.   → [batch_size, G]
-    w_batch = (weights * sampled).sum(dim=1)
-
-    return w_batch  # dtype   normal_bulk  
+def sample_normal_profiles(normal_bulk: torch.Tensor, batch_size: int) -> torch.Tensor:
+    """Independently sample one adjacent-normal profile for each batch item."""
+    indices = torch.randint(
+        0, normal_bulk.shape[0], (batch_size,), device=normal_bulk.device
+    )
+    return normal_bulk[indices]
 
 
 def generate_gaussian_noise_tensor(
@@ -121,8 +95,8 @@ def generate_gaussian_noise_tensor(
 
 
 def train_barlow_twins(encoder, projector, dataloader, criterion, optimizer, scaler, device, normal_bulk,
-                       lambda_pseudo_bulk_rate1,
-                       lambda_pseudo_bulk_rate2,
+                       alpha_min=0.15,
+                       alpha_max=0.85,
                        regularization=None, l1_regular_lambda=1e-5, l2_regular_lambda=1e-5):
     encoder.train()
     if projector:
@@ -136,11 +110,17 @@ def train_barlow_twins(encoder, projector, dataloader, criterion, optimizer, sca
         bulk_batch = bulk_batch.to(device, non_blocking=True)
 
         # ----   ----
-        w1 = generate_weighted_normal_tensor(normal_bulk_tensor, bulk_batch.size(0), 5)
-        w2 = generate_weighted_normal_tensor(normal_bulk_tensor, bulk_batch.size(0), 5)
+        w1 = sample_normal_profiles(normal_bulk_tensor, bulk_batch.size(0))
+        w2 = sample_normal_profiles(normal_bulk_tensor, bulk_batch.size(0))
 
-        d1 = torch.log2(((1 - lambda_pseudo_bulk_rate1) * bulk_batch + lambda_pseudo_bulk_rate1 * w1).clamp(min=eps) + 1)
-        d2 = torch.log2(((1 - lambda_pseudo_bulk_rate2) * bulk_batch + lambda_pseudo_bulk_rate2 * w2).clamp(min=eps) + 1)
+        # Independently sample the tumour fraction for every sample and view.
+        shape = (bulk_batch.size(0), 1)
+        alpha1 = torch.empty(shape, device=device).uniform_(alpha_min, alpha_max)
+        alpha2 = torch.empty(shape, device=device).uniform_(alpha_min, alpha_max)
+        d1_linear = alpha1 * bulk_batch + (1.0 - alpha1) * w1
+        d2_linear = alpha2 * bulk_batch + (1.0 - alpha2) * w2
+        d1 = torch.log2(d1_linear.clamp(min=eps) + 1.0)
+        d2 = torch.log2(d2_linear.clamp(min=eps) + 1.0)
 
         optimizer.zero_grad(set_to_none=True)
         with autocast():
@@ -241,7 +221,7 @@ def train_auto_encoder(encoder, decoder, dataloader, criterion, optimizer, scale
         bulk_log2 = torch.log2(bulk + 1)
 
         # ----   ----
-        w1 = generate_weighted_normal_tensor(normal_bulk_tensor, bulk.size(0), 5)
+        w1 = sample_normal_profiles(normal_bulk_tensor, bulk.size(0))
         d1 = torch.log2(((1 - lambda_pseudo_bulk_rate1) * bulk + lambda_pseudo_bulk_rate1 * w1).clamp(min=eps) + 1)
 
         optimizer.zero_grad(set_to_none=True)
@@ -302,8 +282,8 @@ def train_scarf(encoder, projector, dataloader, criterion, optimizer, scaler, de
         bulk_batch = bulk_batch.to(device, non_blocking=True)
 
         # ---- pseudo-bulk augmentation (same as Barlow Twins) ---- #
-        w1 = generate_weighted_normal_tensor(normal_bulk_tensor, bulk_batch.size(0), 5)
-        w2 = generate_weighted_normal_tensor(normal_bulk_tensor, bulk_batch.size(0), 5)
+        w1 = sample_normal_profiles(normal_bulk_tensor, bulk_batch.size(0))
+        w2 = sample_normal_profiles(normal_bulk_tensor, bulk_batch.size(0))
 
         d1 = torch.log2(((1 - lambda_pseudo_bulk_rate1) * bulk_batch + lambda_pseudo_bulk_rate1 * w1).clamp(min=eps) + 1)
         d2 = torch.log2(((1 - lambda_pseudo_bulk_rate2) * bulk_batch + lambda_pseudo_bulk_rate2 * w2).clamp(min=eps) + 1)
@@ -488,8 +468,8 @@ def train_byol(encoder_online, encoder_target,
         bulk_batch = bulk_batch.to(device, non_blocking=True)
 
         # ---- pseudo-bulk augmentation ---- #
-        w1 = generate_weighted_normal_tensor(normal_bulk_tensor, bulk_batch.size(0), 5)
-        w2 = generate_weighted_normal_tensor(normal_bulk_tensor, bulk_batch.size(0), 5)
+        w1 = sample_normal_profiles(normal_bulk_tensor, bulk_batch.size(0))
+        w2 = sample_normal_profiles(normal_bulk_tensor, bulk_batch.size(0))
 
         d1 = torch.log2(((1 - lambda_pseudo_bulk_rate1) * bulk_batch + lambda_pseudo_bulk_rate1 * w1).clamp(min=eps) + 1)
         d2 = torch.log2(((1 - lambda_pseudo_bulk_rate2) * bulk_batch + lambda_pseudo_bulk_rate2 * w2).clamp(min=eps) + 1)

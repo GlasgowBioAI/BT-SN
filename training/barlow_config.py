@@ -11,11 +11,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 config = {
     # ── Reproducibility ──
-    'seed': 42,
+    'seeds': [42, 43, 44],
 
     # ── Training ──
-    'batch_size': [256],
-    'learning_rate': [1e-3],
+    'batch_size': 256,
+    'learning_rate': 1e-3,
     'num_epochs': 1500,
     'optimizer': ['Adam'],
     'scheduler': 'ReduceLROnPlateau',
@@ -24,28 +24,32 @@ config = {
     'min_lr': 1e-6,
 
     # ── Encoder architecture ──
-    'encoder_first_layer_dim': [1024],
-    'encoder_num_layers': [3],
-    'encoder_output_dim': [4],
+    'encoder_hidden_dims': [1024, 512, 256],
+    'encoder_output_dim': 4,
 
     # ── Structural noise augmentation ──
-    'lambda_pseudo_bulk_rate1': [0.15, 0.85],      # alpha range for view 1
-    'lambda_pseudo_bulk_rate2': [0.15, 0.85],      # alpha range for view 2
+    # alpha is the tumour coefficient. It is sampled independently for every
+    # sample and view at every epoch; the normal coefficient is (1 - alpha).
+    'alpha_min': 0.15,
+    'alpha_max': 0.85,
 
     # ── Barlow Twins loss ──                # off-diagonal penalty
-    'use_projector': [True],
+    'use_projector': True,
+    'projector_hidden_dim': 128,
+    'projector_output_dim': 256,
+    'lambda_param': 18.30605412,
 
     # ── Regularisation ──
-    'regularization': ['l1', 'l2', 'elastic'],
-    'l1_regularization_lambda': 1e-4,
-    'l2_regularization_lambda': 1e-3,
+    'regularization': 'elastic',
+    'l1_regularization_lambda': 2.18e-6,
+    'l2_regularization_lambda': 4.50e-5,
 
     # ── Model type ──
     'model_type': 'barlow_twins',                   # 'barlow_twins' | 'auto_encoder' | 'VAE' | 'scarf' | 'vime' | 'byol'
 
     # ── Data ──
     'testing_dataset_name': 'TCGA',                 # 'TCGA' | 'Metabric' | 'scanb'
-    'test_size': 0.2,                               # train/test split ratio
+    'test_size': 0.2,
     'distortion_add': 'bulk',                       # 'bulk' (structural noise) | 'sc' (single-cell)
     'sample_size': 500,                             # cells/resamples per pseudo-bulk (sc mode)
 

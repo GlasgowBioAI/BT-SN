@@ -1,125 +1,107 @@
-# BT-SN: Barlow Twins with Structured Noise for Cancer Gene Expression
+# BT-SN
 
-**Barlow Twins self-supervised learning with structured noise to create robust cancer sample embeddings**
+Code accompanying **Barlow Twins self-supervised learning with structured noise to create robust cancer sample embeddings**.
 
-Gene expression data from biopsy remains widely used for studying cancer at scale. However, tumor biopsies inevitably contain adjacent normal tissue, introducing contamination that can mask tumor-specific signals. BT-SN (Barlow Twins with Structural Noise) is a self-supervised framework that adapts the Barlow Twins objective to bulk cancer transcriptomics by mixing tumour profiles with adjacent-normal samples during training.
+BT-SN learns cancer gene-expression representations that are robust to non-tumour contamination. During training, each linear-scale tumour profile is independently paired with two adjacent-normal profiles. For each view, the tumour coefficient is sampled independently as
 
-BT-SN demonstrates robustness to non-tumor contamination across three independent breast cancer cohorts (SCAN-B, METABRIC, and TCGA-BRCA), achieving strong performance on cancer grade classification and survival prediction. The latent dimensions show high independence and correspond to biologically coherent transcriptional programs.
-
-## Repository structure
-
+```text
+alpha ~ Uniform(0.15, 0.85)
+view = log2(alpha * tumour + (1 - alpha) * adjacent_normal + 1)
 ```
-BT-SN/
-├── training/
-│   ├── common.py                  Shared encoder, embedding, and loss functions
-│   ├── barlow_config.py           Hyperparameter configuration
-│   ├── dataset_input.py           Data loading with structural noise augmentation
-│   ├── main.py                    Training entry point (all methods)
-│   ├── model_structure.py         Model architectures and loss functions
-│   └── training.py                Training loops for all methods
-│
-├── evaluation/
-│   ├── grade/                     Grade classification (SCAN-B, METABRIC)
-│   ├── survival/                  Survival analysis + KM curves + forest plot
-│   ├── pathway/                   GSEA pathway enrichment (GO-BP)
-│   └── gene_independence/         Dimension independence via gene overlap
-│
-└── paths.py                       Centralised data and checkpoint paths
+
+The two views pass through a shared encoder (`input -> 1024 -> 512 -> 256 -> 4`) and projector (`4 -> 128 -> 256`). The projector is optimized with the Barlow Twins objective and discarded after training.
+
+## Installation
+
+```bash
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
-## Datasets
 
-| Dataset | Description |
-|---------|-------------|
-| **SCAN-B** | RNA-seq, 8,269 tumour samples + 66 normal (training/test split per original study) |
-| **METABRIC** | Microarray, 997 discovery + 995 validation + 144 normal |
-| **TCGA-BRCA** | RNA-seq, 814 tumour + 113 normal (80/20 split) |
+Alternatively, create the complete Conda environment with `conda env create -f environment.yml`.
 
-All three datasets are processed to a unified gene space of 16,736 protein-coding genes. No cross-cohort normalisation is applied.
+## Example workflow
+
+The example creates a small synthetic dataset under `data/example/`, trains a reduced-size BT-SN model for two epochs, saves its embedding, and runs a grade-classification smoke test.
+
+```bash
+python example/run_example.py
+```
+
+This example checks program flow only; it does not reproduce the article's numerical results.
+
+## Data layout
+
+Downloaded data should be placed under repository-relative paths. Training expects samples in rows, genes in columns, and non-negative expression on the linear scale:
+
+```text
+data/
+  scanb/
+    train_tumour.csv
+    train_adjacent_normal.csv
+  metabric/
+    train_tumour.csv
+    train_adjacent_normal.csv
+  tcga/
+    train_tumour.csv
+    train_adjacent_normal.csv
+```
+
+Tumour and adjacent-normal files must contain the same genes in the same order. No machine-specific absolute paths are required. The cohort-specific evaluation scripts retain the filenames used in the study; adjust only the repository-relative entries in `training/paths.py` if your downloaded archive uses different subdirectories.
 
 ## Training
 
-### Requirements
-
-- Python 3.8+
-- PyTorch ≥ 1.12
-- NumPy, pandas, scikit-learn
-- Lifelines
-- Matplotlib, scipy
-
-### Running training
+The default command performs three independent runs with seeds 42, 43, and 44 and retains the parameter state with the lowest validation loss:
 
 ```bash
-cd training
-python main.py                          # BT-SN (structural noise)
-python main.py --gaussian               # BT-GN (Gaussian noise)
+python training/main.py --dataset scanb
+python training/main.py --dataset metabric
+python training/main.py --dataset tcga
 ```
 
-### Supported methods
+Paths and run settings can also be supplied explicitly:
 
-BT-SN is compared against several baselines. `model_type` in `barlow_config.py` selects the method:
+```bash
+python training/main.py \
+  --tumour data/scanb/train_tumour.csv \
+  --normal data/scanb/train_adjacent_normal.csv \
+  --output outputs/scanb/bt_sn
+```
 
-| Method | Key | Description |
-|--------|-----|-------------|
-| BT-SN | `barlow_twins` | Structural noise augmentation (ours) |
-| BT-GN | `barlow_twins` + `--gaussian` | Gaussian noise augmentation (ours) |
-| AE | `auto_encoder` | Autoencoder baseline |
-| VAE | `VAE` | Variational autoencoder baseline |
-| SCARF | `scarf` | Contrastive learning with feature corruption |
-| VIME | `vime` | Self-supervised mask prediction |
-| BYOL | `byol` | Bootstrap Your Own Latent |
+The article settings are defined in `training/barlow_config.py`: Adam with learning rate `1e-3`, batch size 256, at most 1,500 epochs, `ReduceLROnPlateau` with factor 0.1 and patience 100, minimum learning rate `1e-6`, and elastic penalties `2.18e-6` (L1) and `4.50e-5` (L2).
 
 ## Evaluation
 
-### Grade classification
+Evaluation code is organized by analysis:
 
-5-fold cross-validated logistic regression on clean ($\lambda=0.0$) training embeddings, evaluated on test embeddings at 11 contamination levels ($\lambda = 0.0$ to $1.0$). Reports macro-averaged F1 score.
-
-```bash
-cd evaluation/grade
-python scanb_eval.py
-python metabric_eval.py
+```text
+evaluation/grade/              four-class grade classification and contamination series
+evaluation/survival/           five-fold Cox proportional-hazards evaluation
+evaluation/gene_independence/  top/bottom-500 gene overlap between latent dimensions
+evaluation/pathway/            GO Biological Process enrichment and semantic redundancy
 ```
 
-### Survival analysis
+Checkpoint locations are repository-relative and defined in `training/paths.py`. The evaluation scripts compare four-dimensional representations from PCA, NMF, AE, VAE, SCARF, VIME, BYOL, BT-GN, and BT-SN.
 
-Cox proportional hazards model fitted on training set embeddings. Risk scores predicted on held-out test set. Reports C-index and log-rank p-value.
+The pathway workflow requires a local GSEA installation and the GO Biological Process gene-set file. It uses 1,000 permutations, gene-set sizes 15--500, dimension-wise FDR threshold `0.05 / 4`, and semantic-similarity cutoff 0.6, as described in the manuscript.
 
-```bash
-cd evaluation/survival
-python scanb_eval.py
-python metabric_eval.py
-python tcga_eval.py
-```
-
-Kaplan–Meier curves and hazard ratio forest plot:
-```bash
-python km_scanb_panels.py
-python forest_plot.py
-```
-
-### Pathway enrichment
-
-Spearman correlation between each embedding dimension and all genes, followed by GSEA Preranked (GO Biological Process, 1000 permutations).
+The held-out SCAN-B Kaplan--Meier analysis fits one Cox model for each training seed, averages the three risk predictions on the test set, and applies a median split:
 
 ```bash
-cd evaluation/pathway
-python run_bt_sn_fast.py           # BT-SN only (SCAN-B, quick)
-python run_pipeline.py              # All 9 methods (full pipeline)
+python evaluation/survival/km_scanb.py \
+  --train-expression data/scanb/train_tumour_log2.csv \
+  --test-expression data/scanb/test_tumour_log2.csv \
+  --train-survival data/scanb/train_survival.csv \
+  --test-survival data/scanb/test_survival.csv
 ```
 
-### Gene independence
+## Reproducibility notes
 
-Pairwise Jaccard of top-500 positively and bottom-500 negatively correlated genes per dimension. Lower Jaccard = more independent dimensions.
-
-```bash
-cd evaluation/gene_independence
-python scanb.py
-python metabric.py
-```
-
-## Reproducibility
-
-All absolute paths are centralised in `paths.py`. Override the project root with the environment variable `BT_SN_ROOT`, or data root with `BT_SN_DATA`.
-
-Checkpoints referenced in `paths.py` must be placed at the expected locations. The `CHECKPOINTS` dictionary maps method and dataset keys to checkpoint paths.
-
+- Training labels are not used by BT-SN.
+- Adjacent-normal profiles used for training views must come from the training partition.
+- Mixing is performed on the linear expression scale before `log2(x + 1)`.
+- Each view samples its adjacent-normal profile and tumour coefficient independently at every epoch.
+- Downstream analyses use the four-dimensional encoder output; the projector is discarded.
+- Article results aggregate three independently trained representations within each downstream fold and then summarize the five fold-level values.
